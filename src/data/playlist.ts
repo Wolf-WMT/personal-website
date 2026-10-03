@@ -29,16 +29,17 @@ export const playlistGenres = ['ALL', 'Ambient', 'Synthwave', 'Darkwave', 'Darks
 //   - isFavorite: mark as a favorite
 // Set isPlaceholder to false once you add a real song.
 export const tracks: Track[] = [
-  {
-    id: 't01',
-    title: '[Track Name]',
-    artist: '[Artist Name]',
-    album: '[Album Name]',
-    genre: 'Ambient',
-    isPlaceholder: true,
-    isFavorite: false,
-    addedAt: Date.now() - 50000,
-  },
+{
+  id: 't01',
+  title: 'Tattooed In Reverse',
+  artist: 'Marilyn Manson',
+  album: '',
+  genre: 'Darkwave',
+  audio: '/music/Tattooed-In-Reverse-Marilyn-Manson-320.mp3',
+  isPlaceholder: false,
+  isFavorite: true,
+  addedAt: Date.now(),
+},
   {
     id: 't02',
     title: '[Track Name]',

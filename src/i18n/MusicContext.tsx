@@ -41,10 +41,12 @@ const PRESETS: Preset[] = [
 
 export function MusicProvider({ children }: { children: ReactNode }) {
   const tracks = defaultTracks;
+
   const [currentIndex, setCurrentIndex] = useState(0);
   const [playState, setPlayState] = useState<PlayState>('stopped');
   const [volume, setVolumeState] = useState(0.3);
   const [muted, setMuted] = useState(false);
+
   const [enabled, setEnabled] = useState(() => {
     if (typeof window === 'undefined') return false;
     return localStorage.getItem('music-enabled') === 'true';
@@ -57,26 +59,54 @@ export function MusicProvider({ children }: { children: ReactNode }) {
   const masterGainRef = useRef<GainNode | null>(null);
   const filterRef = useRef<BiquadFilterNode | null>(null);
 
+  // Real MP3 audio
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
   const currentTrack = tracks[currentIndex] ?? null;
 
   const cleanupNodes = useCallback(() => {
     oscillatorsRef.current.forEach((osc) => {
-      try { osc.stop(); osc.disconnect(); } catch { /* already stopped */ }
+      try {
+        osc.stop();
+        osc.disconnect();
+      } catch {
+        // Already stopped
+      }
     });
+
     oscillatorsRef.current = [];
+
     if (lfoRef.current) {
-      try { lfoRef.current.stop(); lfoRef.current.disconnect(); } catch { /* */ }
+      try {
+        lfoRef.current.stop();
+        lfoRef.current.disconnect();
+      } catch {
+        // Already stopped
+      }
+
       lfoRef.current = null;
     }
+
     if (lfoGainRef.current) {
-      try { lfoGainRef.current.disconnect(); } catch { /* */ }
+      try {
+        lfoGainRef.current.disconnect();
+      } catch {
+        // Already disconnected
+      }
+
       lfoGainRef.current = null;
     }
   }, []);
 
   const initAudio = useCallback(() => {
     if (audioCtxRef.current) return audioCtxRef.current;
-    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+
+    const Ctx =
+      window.AudioContext ||
+      (window as unknown as {
+        webkitAudioContext: typeof AudioContext;
+      }).webkitAudioContext;
+
     const ctx = new Ctx();
     audioCtxRef.current = ctx;
 
@@ -94,45 +124,112 @@ export function MusicProvider({ children }: { children: ReactNode }) {
     return ctx;
   }, [muted, volume]);
 
-  const startSynth = useCallback((presetIndex: number) => {
-    const ctx = initAudio();
-    if (!ctx || !filterRef.current || !masterGainRef.current) return;
-    if (ctx.state === 'suspended') ctx.resume();
+  const startSynth = useCallback(
+    (presetIndex: number) => {
+      const ctx = initAudio();
 
-    cleanupNodes();
+      if (!ctx || !filterRef.current || !masterGainRef.current) return;
 
-    const preset = PRESETS[presetIndex % PRESETS.length];
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
 
-    const lfo = ctx.createOscillator();
-    lfo.frequency.value = preset.lfoFreq;
-    const lfoGain = ctx.createGain();
-    lfoGain.gain.value = 30;
-    lfo.connect(lfoGain);
-    lfoRef.current = lfo;
-    lfoGainRef.current = lfoGain;
+      cleanupNodes();
 
-    if (filterRef.current) {
+      const preset = PRESETS[presetIndex % PRESETS.length];
+
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = preset.lfoFreq;
+
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.value = 30;
+
+      lfo.connect(lfoGain);
+
+      lfoRef.current = lfo;
+      lfoGainRef.current = lfoGain;
+
       lfoGain.connect(filterRef.current.frequency);
-    }
 
-    preset.freqs.forEach((freq) => {
-      const osc = ctx.createOscillator();
-      osc.type = preset.type;
-      osc.frequency.value = freq;
-      const oscGain = ctx.createGain();
-      oscGain.gain.value = 0.15 / preset.freqs.length;
-      osc.connect(oscGain);
-      if (filterRef.current) oscGain.connect(filterRef.current);
-      osc.start();
-      oscillatorsRef.current.push(osc);
-    });
+      preset.freqs.forEach((freq) => {
+        const osc = ctx.createOscillator();
 
-    lfo.start();
-  }, [cleanupNodes, initAudio]);
+        osc.type = preset.type;
+        osc.frequency.value = freq;
+
+        const oscGain = ctx.createGain();
+        oscGain.gain.value = 0.15 / preset.freqs.length;
+
+        osc.connect(oscGain);
+        oscGain.connect(filterRef.current!);
+
+        osc.start();
+
+        oscillatorsRef.current.push(osc);
+      });
+
+      lfo.start();
+    },
+    [cleanupNodes, initAudio]
+  );
 
   const stopSynth = useCallback(() => {
     cleanupNodes();
   }, [cleanupNodes]);
+
+  // Stop real MP3 audio
+  const stopAudio = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+  }, []);
+
+  // Play a real audio file
+  const playAudio = useCallback(
+    (trackIndex: number) => {
+      const track = tracks[trackIndex];
+
+      if (!track?.audio) {
+        startSynth(trackIndex);
+        return;
+      }
+
+      // Stop synth if it was playing
+      stopSynth();
+
+      if (!audioRef.current) {
+        audioRef.current = new Audio();
+      }
+
+      const audio = audioRef.current;
+
+      audio.pause();
+      audio.src = track.audio;
+      audio.currentTime = 0;
+      audio.volume = muted ? 0 : volume;
+
+      audio.onended = () => {
+        setPlayState('stopped');
+      };
+
+      audio.onerror = () => {
+        console.error('Could not load audio:', track.audio);
+        setPlayState('stopped');
+      };
+
+      audio
+        .play()
+        .then(() => {
+          setPlayState('playing');
+        })
+        .catch((error) => {
+          console.error('Audio playback failed:', error);
+          setPlayState('paused');
+        });
+    },
+    [tracks, muted, volume, startSynth, stopSynth]
+  );
 
   const updateVolume = useCallback(() => {
     if (masterGainRef.current && audioCtxRef.current) {
@@ -142,17 +239,33 @@ export function MusicProvider({ children }: { children: ReactNode }) {
         0.1
       );
     }
+
+    if (audioRef.current) {
+      audioRef.current.volume = muted ? 0 : volume;
+    }
   }, [muted, volume]);
 
   const play = useCallback(() => {
     setEnabled(true);
     localStorage.setItem('music-enabled', 'true');
-    startSynth(currentIndex);
-    setPlayState('playing');
-  }, [currentIndex, startSynth]);
+
+    const track = tracks[currentIndex];
+
+    if (track?.audio) {
+      playAudio(currentIndex);
+    } else {
+      startSynth(currentIndex);
+      setPlayState('playing');
+    }
+  }, [currentIndex, tracks, playAudio, startSynth]);
 
   const pause = useCallback(() => {
     stopSynth();
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+    }
+
     setPlayState('paused');
   }, [stopSynth]);
 
@@ -166,34 +279,64 @@ export function MusicProvider({ children }: { children: ReactNode }) {
 
   const next = useCallback(() => {
     const newIdx = (currentIndex + 1) % tracks.length;
+
+    stopSynth();
+    stopAudio();
+
     setCurrentIndex(newIdx);
+
     if (playState === 'playing') {
-      stopSynth();
-      startSynth(newIdx);
+      playAudio(newIdx);
     }
-  }, [currentIndex, tracks.length, playState, stopSynth, startSynth]);
+  }, [
+    currentIndex,
+    tracks.length,
+    playState,
+    stopSynth,
+    stopAudio,
+    playAudio,
+  ]);
 
   const prev = useCallback(() => {
     const newIdx = (currentIndex - 1 + tracks.length) % tracks.length;
-    setCurrentIndex(newIdx);
-    if (playState === 'playing') {
-      stopSynth();
-      startSynth(newIdx);
-    }
-  }, [currentIndex, tracks.length, playState, stopSynth, startSynth]);
 
-  const selectTrack = useCallback((index: number) => {
-    if (index < 0 || index >= tracks.length) return;
-    setCurrentIndex(index);
     stopSynth();
-    startSynth(index);
-    setPlayState('playing');
-    setEnabled(true);
-    localStorage.setItem('music-enabled', 'true');
-  }, [tracks.length, stopSynth, startSynth]);
+    stopAudio();
+
+    setCurrentIndex(newIdx);
+
+    if (playState === 'playing') {
+      playAudio(newIdx);
+    }
+  }, [
+    currentIndex,
+    tracks.length,
+    playState,
+    stopSynth,
+    stopAudio,
+    playAudio,
+  ]);
+
+  const selectTrack = useCallback(
+    (index: number) => {
+      if (index < 0 || index >= tracks.length) return;
+
+      stopSynth();
+      stopAudio();
+
+      setCurrentIndex(index);
+      setEnabled(true);
+
+      localStorage.setItem('music-enabled', 'true');
+
+      playAudio(index);
+    },
+    [tracks.length, stopSynth, stopAudio, playAudio]
+  );
 
   const setVolume = useCallback((v: number) => {
     const clamped = Math.max(0, Math.min(1, v));
+
     setVolumeState(clamped);
     localStorage.setItem('music-volume', String(clamped));
   }, []);
@@ -201,7 +344,9 @@ export function MusicProvider({ children }: { children: ReactNode }) {
   const toggleMute = useCallback(() => {
     setMuted((m) => {
       const next = !m;
+
       localStorage.setItem('music-muted', String(next));
+
       return next;
     });
   }, []);
@@ -215,8 +360,18 @@ export function MusicProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const savedVol = localStorage.getItem('music-volume');
     const savedMuted = localStorage.getItem('music-muted');
-    if (savedVol) setVolumeState(parseFloat(savedVol));
-    if (savedMuted === 'true') setMuted(true);
+
+    if (savedVol) {
+      const parsedVolume = parseFloat(savedVol);
+
+      if (!Number.isNaN(parsedVolume)) {
+        setVolumeState(Math.max(0, Math.min(1, parsedVolume)));
+      }
+    }
+
+    if (savedMuted === 'true') {
+      setMuted(true);
+    }
   }, []);
 
   // Update volume when it changes
@@ -228,8 +383,18 @@ export function MusicProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return () => {
       cleanupNodes();
+
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      }
+
       if (audioCtxRef.current) {
-        try { audioCtxRef.current.close(); } catch { /* */ }
+        try {
+          audioCtxRef.current.close();
+        } catch {
+          // Already closed
+        }
       }
     };
   }, [cleanupNodes]);
@@ -238,15 +403,32 @@ export function MusicProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!enabled && playState === 'playing') {
       stopSynth();
+      stopAudio();
       setPlayState('stopped');
     }
-  }, [enabled, playState, stopSynth]);
+  }, [enabled, playState, stopSynth, stopAudio]);
 
   return (
-    <MusicContext.Provider value={{
-      tracks, currentTrack, currentIndex, playState, volume, muted, enabled,
-      play, pause, toggle, next, prev, selectTrack, setVolume, toggleMute, enable,
-    }}>
+    <MusicContext.Provider
+      value={{
+        tracks,
+        currentTrack,
+        currentIndex,
+        playState,
+        volume,
+        muted,
+        enabled,
+        play,
+        pause,
+        toggle,
+        next,
+        prev,
+        selectTrack,
+        setVolume,
+        toggleMute,
+        enable,
+      }}
+    >
       {children}
     </MusicContext.Provider>
   );
@@ -254,6 +436,10 @@ export function MusicProvider({ children }: { children: ReactNode }) {
 
 export function useMusic(): MusicContextValue {
   const ctx = useContext(MusicContext);
-  if (!ctx) throw new Error('useMusic must be used within MusicProvider');
+
+  if (!ctx) {
+    throw new Error('useMusic must be used within MusicProvider');
+  }
+
   return ctx;
 }
